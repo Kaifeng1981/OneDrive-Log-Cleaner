@@ -11,11 +11,22 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 # ================= 真正的绿色便携路径绑定 =================
-# 绝对锁定程序本体 (.py 或打包后的 .exe) 所在的同级真实物理目录
+# 绝对锁定程序本体 (.py 或打包后的 .exe) 所在的同级真实物理目录 (用于保存配置和历史)
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_FILE = os.path.join(BASE_DIR, "app_config.json")
 HISTORY_LOG_FILE = os.path.join(BASE_DIR, "execution_history.log")
 ERROR_LOG_FILE = os.path.join(BASE_DIR, "error_log.txt")
+
+# ================= 专属资源解压路径映射引擎 (专治 EXE 图标丢失) =================
+def resource_path(relative_path):
+    """
+    智能双轨路径定位：
+    如果是本地 .py 运行，直接返回同级目录下的资源；
+    如果是 PyInstaller 打包的 .exe 运行，自动去系统的 _MEIxxxx 临时解压包里提取嵌好的资源。
+    """
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(BASE_DIR, relative_path)
 
 # ================= 安全防御白名单 (全量覆盖 OneDrive 日志扩展名) =================
 # 涵盖 OneDrive 专属的二进制调试日志及遥测缓存碎片
@@ -190,7 +201,8 @@ class OneDriveCleanerVertical:
         self.apply_theme()
         self.refresh_text()
         
-        ico_path = os.path.join(BASE_DIR, "logo.ico")
+        # 完美调用资源解压映射引擎，无论在哪都能精准拿到 logo.ico
+        ico_path = resource_path("logo.ico")
         if os.path.exists(ico_path):
             try: self.root.iconbitmap(ico_path)
             except: pass
@@ -247,7 +259,7 @@ class OneDriveCleanerVertical:
             from PIL import Image, ImageDraw
             import pystray
 
-            logo_path = os.path.join(BASE_DIR, "logo.ico")
+            logo_path = resource_path("logo.ico")
 
             def get_icon_image():
                 if os.path.exists(logo_path):
@@ -600,7 +612,6 @@ class OneDriveCleanerVertical:
         if os.path.exists(self.logs_dir):
             for r, ds, fs in os.walk(self.logs_dir, topdown=False):
                 for f in fs:
-                    # 【全量覆盖防护线】精准匹配 OneDrive 专属日志扩展名，杜绝误伤也杜绝漏删
                     if f.lower().endswith(SAFE_EXTS):
                         fp = os.path.join(r, f)
                         try: 
@@ -615,7 +626,6 @@ class OneDriveCleanerVertical:
         freed_gb = freed / (1024**3)
         if not silent: self.show_tip("clean_done", size=freed_gb)
         
-        # 只要成功删除了实际文件，立刻可靠计入历史统计
         if deleted_files > 0:
             self.db.add_record("PURGE", freed_gb=freed_gb, file_count=deleted_files)
             totals = self.db.get_totals()
