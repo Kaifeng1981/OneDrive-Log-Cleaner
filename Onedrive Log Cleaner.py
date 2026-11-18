@@ -30,10 +30,11 @@ def resource_path(relative_path):
 
 # ================= 安全防御白名单 (全量覆盖 OneDrive 日志扩展名) =================
 # 涵盖 OneDrive 专属的二进制调试日志及遥测缓存碎片
+# Conservative allow-list: generic data, backup, temporary, text and keystore files are excluded.
+# Locked files are skipped; OneDrive and Office processes are never forcibly terminated.
 SAFE_EXTS = (
-    ".log", ".etl", ".dat", ".bak", ".tmp",
-    ".odl", ".odlgz", ".odlsent", ".aold",
-    ".otc", ".session", ".txt", ".keystore"
+    ".odl", ".odlgz", ".odlsent", ".aold", ".otc",
+    ".log", ".etl"
 )
 
 # ================= 全局防闪退与精准异常留痕引擎 =================
@@ -602,37 +603,58 @@ class OneDriveCleanerVertical:
 
     # ================= 全量白名单防御级清理引擎 =================
     def clean_junk(self, silent=False):
-        for p in ["onedrive.exe", "FileCoAuth.exe"]:
-            subprocess.run(["taskkill", "/F", "/IM", p], capture_output=True)
-        time.sleep(1.5)
+        # Never force-kill OneDrive or Office co-authoring processes.
+        if not silent:
+            self.show_tip("cleaning")
+        freed, deleted_files, skipped_files = 0, 0, 0
 
-        if not silent: self.show_tip("cleaning")
-        freed, deleted_files = 0, 0
-        
-        if os.path.exists(self.logs_dir):
-            for r, ds, fs in os.walk(self.logs_dir, topdown=False):
-                for f in fs:
-                    if f.lower().endswith(SAFE_EXTS):
-                        fp = os.path.join(r, f)
-                        try: 
-                            s = os.path.getsize(fp); os.remove(fp)
-                            freed += s; deleted_files += 1
-                        except Exception as e: self.db._log_internal_error(f"安全删除失败 ({f}): {e}")
-                
-                for d in ds:
-                    try: os.rmdir(os.path.join(r, d))
-                    except: pass
+        expected_root = os.path.normcase(os.path.abspath(os.path.join(
+            self.local_app_data, "Microsoft", "OneDrive", "logs"
+        )))
+        actual_root = os.path.normcase(os.path.abspath(self.logs_dir))
+        if actual_root != expected_root:
+            self.db._log_internal_error(
+                f"清理已取消：日志目录与默认 OneDrive logs 路径不一致: {self.logs_dir}"
+            )
+            self.show_tip("清理已取消：检测到日志目录路径异常。")
+            self.is_processing = False
+            return
+
+        if os.path.isdir(self.logs_dir):
+            for root, dirs, files in os.walk(self.logs_dir, topdown=False, followlinks=False):
+                dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+                for filename in files:
+                    if not filename.lower().endswith(SAFE_EXTS):
+                        continue
+                    fp = os.path.join(root, filename)
+                    try:
+                        if os.path.islink(fp) or not os.path.isfile(fp):
+                            continue
+                        size = os.path.getsize(fp)
+                        os.remove(fp)
+                        freed += size
+                        deleted_files += 1
+                    except Exception as e:
+                        skipped_files += 1
+                        self.db._log_internal_error(f"清理跳过文件 ({fp}): {e}")
+                for dirname in dirs:
+                    try:
+                        os.rmdir(os.path.join(root, dirname))
+                    except OSError:
+                        pass
 
         freed_gb = freed / (1024**3)
-        if not silent: self.show_tip("clean_done", size=freed_gb)
-        
-        if deleted_files > 0:
+        if not silent:
+            self.show_tip("clean_done", size=freed_gb)
+        if skipped_files:
+            self.db._log_internal_error(f"本次清理跳过 {skipped_files} 个无法删除或正在使用的文件。")
+        if deleted_files:
             self.db.add_record("PURGE", freed_gb=freed_gb, file_count=deleted_files)
             totals = self.db.get_totals()
             self.history_count, self.history_freed_gb = totals["count"], totals["freed_gb"]
 
-        if self.onedrive_exe: os.system(f'start "" "{self.onedrive_exe}"')
-        self.is_processing = False; self.check_size_now()
+        self.is_processing = False
+        self.check_size_now()
 
     def reset_onedrive(self):
         t = LANG_DICT[self.config["lang"]]
@@ -649,41 +671,105 @@ class OneDriveCleanerVertical:
     def move_folder(self):
         t = LANG_DICT[self.config["lang"]]
         target_dir = filedialog.askdirectory(title=t["move_select_t"])
-        if not target_dir: return
-        
-        drive = os.path.splitdrive(target_dir)[0].upper()
+        if not target_dir:
+            return
+
+        drive = os.path.splitdrive(os.path.abspath(target_dir))[0].upper()
+        if not drive:
+            messagebox.showerror("提示", "无法识别目标磁盘盘符。")
+            return
         if drive == "C:":
             messagebox.showerror("提示", t["move_err_c"])
             return
 
-        def _exec():
-            self.show_tip("正在准备挪动文件夹...")
-            subprocess.run(["taskkill", "/F", "/IM", "onedrive.exe"], capture_output=True)
-            time.sleep(1.5)
-            
-            dest = os.path.join(target_dir, "OneDrive_Logs_Folder")
-            try:
-                os.makedirs(dest, exist_ok=True)
-            except Exception as e:
-                self.show_tip(f"前置校验失败，无法建立目标区: {e}")
-                self.is_processing = False; return
+        dest = os.path.join(target_dir, "OneDrive_Logs_Folder")
+        if os.path.exists(dest):
+            messagebox.showerror(
+                "迁移取消",
+                "目标目录已经存在。为避免覆盖已有数据，本次迁移已取消。\n"
+                "请另选一个不包含 OneDrive_Logs_Folder 的目录。"
+            )
+            return
 
+        if not messagebox.askyesno(
+            "迁移前确认",
+            "请先从系统托盘完全退出 OneDrive，并关闭正在使用 OneDrive 文件的 Office 程序。\n\n"
+            "本程序不会强制结束 OneDrive 或 Office 进程。迁移成功后会保留原目录备份。\n\n继续吗？"
+        ):
+            return
+
+        def _exec():
+            self.show_tip("正在检查迁移条件...")
+            source = self.logs_dir
+            backup = source + ".backup_" + time.strftime("%Y%m%d_%H%M%S")
+            moved_source = False
+            junction_created = False
             try:
-                if os.path.exists(self.logs_dir): shutil.rmtree(self.logs_dir)
-            except Exception as e:
-                self.show_tip(f"解除原端锁阻碍，请检查占用: {e}")
-                self.is_processing = False; return
-            
-            res = subprocess.run(f'mklink /j "{self.logs_dir}" "{dest}"', shell=True, capture_output=True, text=True)
-            if res.returncode == 0:
+                if not os.path.isdir(source):
+                    raise RuntimeError("原 OneDrive 日志目录不存在，无法迁移。")
+
+                proc = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq OneDrive.exe", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, check=False
+                )
+                if "onedrive.exe" in (proc.stdout or "").lower():
+                    raise RuntimeError("检测到 OneDrive 仍在运行。请先退出 OneDrive 后重试。")
+
+                if os.path.islink(source) or (
+                    hasattr(os.path, "isjunction") and os.path.isjunction(source)
+                ):
+                    raise RuntimeError("当前日志目录已经是链接目录。为避免破坏现有迁移，本次操作取消。")
+
+                os.makedirs(target_dir, exist_ok=True)
+                shutil.copytree(source, dest)
+
+                def tree_stats(folder):
+                    total_bytes, total_files = 0, 0
+                    for current, dirs, files in os.walk(folder, followlinks=False):
+                        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(current, d))]
+                        for name in files:
+                            fp = os.path.join(current, name)
+                            if os.path.islink(fp):
+                                continue
+                            total_bytes += os.path.getsize(fp)
+                            total_files += 1
+                    return total_files, total_bytes
+
+                if tree_stats(source) != tree_stats(dest):
+                    raise RuntimeError("复制校验失败。原目录未删除，请检查目标磁盘后重试。")
+
+                os.rename(source, backup)
+                moved_source = True
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", source, dest],
+                    capture_output=True, text=True, check=False
+                )
+                if result.returncode != 0 or not os.path.isdir(source):
+                    raise RuntimeError("创建 Junction 失败：" + (result.stderr or result.stdout or "未知错误"))
+                junction_created = True
+
                 self.db.add_record("REDIRECT", details=dest)
-                self.show_tip(t["move_success"].format(d=dest))
-                self.drive_letter = drive 
-            else:
-                self.show_tip("挪动建立连接失败了，请稍后再试。")
-            
-            if self.onedrive_exe: os.system(f'start "" "{self.onedrive_exe}"')
-            self.is_processing = False; self.check_size_now()
+                self.drive_letter = drive
+                self.show_tip("迁移成功。原始目录备份保留在：" + backup)
+                if self.onedrive_exe:
+                    subprocess.Popen([self.onedrive_exe], close_fds=True)
+
+            except Exception as e:
+                try:
+                    if junction_created and (
+                        os.path.islink(source) or
+                        (hasattr(os.path, "isjunction") and os.path.isjunction(source))
+                    ):
+                        os.rmdir(source)
+                    if moved_source and os.path.exists(backup) and not os.path.exists(source):
+                        os.rename(backup, source)
+                except Exception as rollback_error:
+                    self.db._log_internal_error(f"迁移回滚失败：{rollback_error}")
+                self.db._log_internal_error(f"目录迁移失败：{e}")
+                self.show_tip(f"迁移失败：{e}")
+            finally:
+                self.is_processing = False
+                self.check_size_now()
 
         self.do_task(_exec)
 
