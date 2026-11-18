@@ -28,8 +28,8 @@ def resource_path(relative_path):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(BASE_DIR, relative_path)
 
-# ================= 安全防御白名单 (全量覆盖 OneDrive 日志扩展名) =================
-# 涵盖 OneDrive 专属的二进制调试日志及遥测缓存碎片
+# ================= 保守日志白名单：无法确认的文件一律跳过 =================
+# 仅处理 OneDrive 常见专属日志类型；不按通用临时/数据扩展名删除
 # Conservative allowlist; generic data, text, temp, backup and key files are excluded.
 SAFE_EXTS = (".odl", ".odlgz", ".odlsent", ".etl", ".aold")
 SAFE_LOG_NAMES = ("onedrive", "syncengine", "syncdiagnostics")
@@ -643,7 +643,14 @@ class OneDriveCleanerVertical:
     def preview_and_clean(self):
         if self.is_processing:
             return
+        self.do_task(self._scan_and_queue_preview)
+
+    def _scan_and_queue_preview(self):
         candidates, skipped = self.scan_safe_log_files()
+        self.root.after(0, lambda: self._show_clean_preview(candidates, skipped))
+
+    def _show_clean_preview(self, candidates, skipped):
+        self.is_processing = False
         total_bytes = sum(size for _, size in candidates)
         total_gb = total_bytes / (1024 ** 3)
         if not candidates:
