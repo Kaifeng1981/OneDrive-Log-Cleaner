@@ -106,7 +106,7 @@ LANG_DICT = {
         "btn_reset": "重置Onedrive", 
         "btn_move": "迁移至其他盘...",
         "chk_monitor": "空间监控提醒（超限提示，不自动删除；可开机启动）",
-        "threshold_lbl": "自动清理阈值:",
+        "threshold_lbl": "提醒阈值:",
         "reset_confirm_t": "温馨提示：重置前请务必看清",
         "reset_confirm_m": "重置会让 OneDrive 重新核对一遍本地的文件账本。\n\n⚠️ 重要预告：\n如果您平时存的工作小文件非常多（几百GB以上），重置后右下角的 OneDrive 图标可能会转圈 30 到 60 分钟，并提示“正在处理更改”。\n\n请千万别慌！它绝对没有在重新下载或删除文件，只是在默默比对文件指纹，核对完就彻底顺畅了。\n\n确定现在要重置吗？",
         "move_select_t": "请选择要挪到的目标盘 (比如直接选 D盘 或 E盘)",
@@ -136,7 +136,7 @@ LANG_DICT = {
         "btn_reset": "Reset Onedrive", 
         "btn_move": "Move Drive...",
         "chk_monitor": "Space monitor (alert only; no automatic deletion)",
-        "threshold_lbl": "Auto-Clean Threshold:",
+        "threshold_lbl": "Alert Threshold:",
         "reset_confirm_t": "Important Note Before Resetting",
         "reset_confirm_m": "Resetting forces OneDrive to re-check your local file index.\n\n⚠️ Heads Up:\nIf you have hundreds of GBs of tiny work files, OneDrive might spin for 30-60 minutes showing 'Processing changes'.\n\nDon't worry! It is NOT re-downloading or deleting files. It's just comparing file fingerprints to fix errors.\n\nAre you sure you want to proceed?",
         "move_select_t": "Select a drive (like D: or E:)",
@@ -174,7 +174,7 @@ class OneDriveCleanerVertical:
         self.db = SimpleLogger()
         self.local_app_data = os.environ.get("LOCALAPPDATA", "")
         self.logs_dir = os.path.join(self.local_app_data, "Microsoft", "OneDrive", "logs")
-        self.drive_letter = os.path.splitdrive(self.logs_dir)[0] if self.logs_dir else "C:"
+        self.drive_letter = os.path.splitdrive(os.path.realpath(self.logs_dir))[0] if self.logs_dir else "C:"
         self.onedrive_exe = self.find_program()
 
         self.config = {"lang": "zh", "theme_mode": "auto", "autostart": False, "threshold_gb": 10}
@@ -698,7 +698,11 @@ class OneDriveCleanerVertical:
         if not target_drive or target_drive == source_drive:
             messagebox.showerror("迁移取消", "请选择与当前日志目录不同的磁盘分区。")
             return
-        if os.path.commonpath([os.path.realpath(source), os.path.realpath(target_dir)]) == os.path.realpath(source):
+        try:
+            target_inside_source = os.path.commonpath([os.path.realpath(source), os.path.realpath(target_dir)]) == os.path.realpath(source)
+        except ValueError:
+            target_inside_source = False
+        if target_inside_source:
             messagebox.showerror("迁移取消", "目标目录不能位于 OneDrive 日志目录内部。")
             return
         dest = os.path.join(target_dir, "OneDrive_Logs_Folder")
