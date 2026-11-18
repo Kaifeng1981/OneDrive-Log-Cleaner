@@ -30,11 +30,9 @@ def resource_path(relative_path):
 
 # ================= 安全防御白名单 (全量覆盖 OneDrive 日志扩展名) =================
 # 涵盖 OneDrive 专属的二进制调试日志及遥测缓存碎片
-SAFE_EXTS = (
-    ".log", ".etl", ".dat", ".bak", ".tmp",
-    ".odl", ".odlgz", ".odlsent", ".aold",
-    ".otc", ".session", ".txt", ".keystore"
-)
+# Conservative allowlist; generic data, text, temp, backup and key files are excluded.
+SAFE_EXTS = (".odl", ".odlgz", ".odlsent", ".etl", ".aold")
+SAFE_LOG_NAMES = ("onedrive", "syncengine", "syncdiagnostics")
 
 # ================= 全局防闪退与精准异常留痕引擎 =================
 def global_exception_handler(exc_type, exc_value, exc_traceback):
@@ -107,7 +105,7 @@ LANG_DICT = {
         "btn_scan": "手动刷新",
         "btn_reset": "重置Onedrive", 
         "btn_move": "迁移至其他盘...",
-        "chk_monitor": "自动清理 (超过阈值自动默默清理，并开机启动)",
+        "chk_monitor": "空间监控提醒（超限提示，不自动删除；可开机启动）",
         "threshold_lbl": "自动清理阈值:",
         "reset_confirm_t": "温馨提示：重置前请务必看清",
         "reset_confirm_m": "重置会让 OneDrive 重新核对一遍本地的文件账本。\n\n⚠️ 重要预告：\n如果您平时存的工作小文件非常多（几百GB以上），重置后右下角的 OneDrive 图标可能会转圈 30 到 60 分钟，并提示“正在处理更改”。\n\n请千万别慌！它绝对没有在重新下载或删除文件，只是在默默比对文件指纹，核对完就彻底顺畅了。\n\n确定现在要重置吗？",
@@ -137,7 +135,7 @@ LANG_DICT = {
         "btn_scan": "Refresh",
         "btn_reset": "Reset Onedrive", 
         "btn_move": "Move Drive...",
-        "chk_monitor": "Auto Clean (Purge when above threshold & Auto-boot)",
+        "chk_monitor": "Space monitor (alert only; no automatic deletion)",
         "threshold_lbl": "Auto-Clean Threshold:",
         "reset_confirm_t": "Important Note Before Resetting",
         "reset_confirm_m": "Resetting forces OneDrive to re-check your local file index.\n\n⚠️ Heads Up:\nIf you have hundreds of GBs of tiny work files, OneDrive might spin for 30-60 minutes showing 'Processing changes'.\n\nDon't worry! It is NOT re-downloading or deleting files. It's just comparing file fingerprints to fix errors.\n\nAre you sure you want to proceed?",
@@ -359,7 +357,7 @@ class OneDriveCleanerVertical:
         self.btn_box = tk.Frame(self.root)
         self.btn_box.pack(fill=tk.X, padx=12, pady=4)
         
-        self.btn_clean = tk.Button(self.btn_box, font=("Microsoft YaHei", 10, "bold"), relief=tk.FLAT, cursor="hand2", command=lambda: self.do_task(self.clean_junk))
+        self.btn_clean = tk.Button(self.btn_box, font=("Microsoft YaHei", 10, "bold"), relief=tk.FLAT, cursor="hand2", command=self.preview_and_clean)
         self.btn_clean.pack(fill=tk.X, pady=3, ipady=4)
         
         self.sub_grid = tk.Frame(self.btn_box)
@@ -473,7 +471,7 @@ class OneDriveCleanerVertical:
 
     def refresh_text(self):
         t = LANG_DICT[self.config["lang"]]
-        self.root.title(t["title"]); self.lbl_title.config(text=t["title"])
+        self.root.title(t["title"] + " - v1.0 Beta 2"); self.lbl_title.config(text=t["title"] + "  |  Beta 2")
         self.btn_lang.config(text=t["lang"])
         self.btn_help.config(text=t["btn_help"])
         
@@ -600,40 +598,82 @@ class OneDriveCleanerVertical:
         
         self.canvas.create_rectangle(0, 0, log_w, h, fill="#0078D4", outline="")
 
-    # ================= 全量白名单防御级清理引擎 =================
-    def clean_junk(self, silent=False):
-        for p in ["onedrive.exe", "FileCoAuth.exe"]:
-            subprocess.run(["taskkill", "/F", "/IM", p], capture_output=True)
-        time.sleep(1.5)
+    def _is_within_logs_dir(self, path):
+        root = os.path.realpath(self.logs_dir)
+        candidate = os.path.realpath(path)
+        try:
+            return os.path.commonpath([root, candidate]) == root
+        except (ValueError, OSError):
+            return False
 
-        if not silent: self.show_tip("cleaning")
-        freed, deleted_files = 0, 0
-        
-        if os.path.exists(self.logs_dir):
-            for r, ds, fs in os.walk(self.logs_dir, topdown=False):
-                for f in fs:
-                    if f.lower().endswith(SAFE_EXTS):
-                        fp = os.path.join(r, f)
-                        try: 
-                            s = os.path.getsize(fp); os.remove(fp)
-                            freed += s; deleted_files += 1
-                        except Exception as e: self.db._log_internal_error(f"安全删除失败 ({f}): {e}")
-                
-                for d in ds:
-                    try: os.rmdir(os.path.join(r, d))
-                    except: pass
+    def scan_safe_log_files(self):
+        """Build a conservative preview without following directory symlinks."""
+        candidates, skipped = [], 0
+        if not os.path.isdir(self.logs_dir):
+            return candidates, skipped
+        for current_root, dirs, files in os.walk(self.logs_dir, topdown=True, followlinks=False):
+            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(current_root, d))]
+            for name in files:
+                path = os.path.join(current_root, name)
+                try:
+                    if os.path.islink(path) or not os.path.isfile(path) or not self._is_within_logs_dir(path):
+                        skipped += 1
+                        continue
+                    lower = name.lower()
+                    ext = os.path.splitext(lower)[1]
+                    allowed = ext in SAFE_EXTS or (ext == ".log" and any(token in lower for token in SAFE_LOG_NAMES))
+                    if not allowed:
+                        skipped += 1
+                        continue
+                    candidates.append((path, os.path.getsize(path)))
+                except OSError:
+                    skipped += 1
+        return candidates, skipped
 
-        freed_gb = freed / (1024**3)
-        if not silent: self.show_tip("clean_done", size=freed_gb)
-        
-        if deleted_files > 0:
-            self.db.add_record("PURGE", freed_gb=freed_gb, file_count=deleted_files)
-            totals = self.db.get_totals()
-            self.history_count, self.history_freed_gb = totals["count"], totals["freed_gb"]
+    def preview_and_clean(self):
+        if self.is_processing:
+            return
+        candidates, skipped = self.scan_safe_log_files()
+        total_bytes = sum(size for _, size in candidates)
+        total_gb = total_bytes / (1024 ** 3)
+        if not candidates:
+            messagebox.showinfo("清理预览", f"没有发现符合严格白名单的日志文件。\n跳过/不符合条件的文件：{skipped} 个")
+            return
+        detail = (f"清理前预览：\n\n符合白名单的文件：{len(candidates)} 个\n"
+                  f"预计释放空间：{total_gb:.3f} GB\n跳过/不符合条件：{skipped} 个\n\n"
+                  f"被占用或无权限的文件会跳过。是否继续？")
+        if messagebox.askyesno("请确认清理", detail):
+            self.do_task(lambda: self.clean_junk(confirmed_files=candidates))
 
-        if self.onedrive_exe: os.system(f'start "" "{self.onedrive_exe}"')
-        self.is_processing = False; self.check_size_now()
-
+    def clean_junk(self, silent=False, confirmed_files=None):
+        # Beta 2: every purge requires an explicit preview and user confirmation.
+        if confirmed_files is None:
+            self.show_tip("Beta 2 安全保护：清理必须先预览并由用户确认。")
+            self.is_processing = False
+            return
+        freed, deleted_files, skipped = 0, 0, 0
+        for fp, preview_size in confirmed_files:
+            try:
+                if not self._is_within_logs_dir(fp) or os.path.islink(fp) or not os.path.isfile(fp):
+                    skipped += 1
+                    continue
+                actual_size = os.path.getsize(fp)
+                os.remove(fp)
+                freed += actual_size
+                deleted_files += 1
+            except OSError as e:
+                skipped += 1
+                self.db._log_internal_error(f"清理跳过 ({fp}): {e}")
+            except Exception as e:
+                skipped += 1
+                self.db._log_internal_error(f"清理异常 ({fp}): {e}")
+        freed_gb = freed / (1024 ** 3)
+        self.db.add_record("PURGE", freed_gb=freed_gb, file_count=deleted_files, details=f"SKIPPED: {skipped}")
+        totals = self.db.get_totals()
+        self.history_count, self.history_freed_gb = totals["count"], totals["freed_gb"]
+        self.show_tip(f"清理完成：删除 {deleted_files} 个文件，释放 {freed_gb:.3f} GB；跳过 {skipped} 个。")
+        self.is_processing = False
+        self.root.after(0, lambda: self.do_task(self.check_size_now))
     def reset_onedrive(self):
         t = LANG_DICT[self.config["lang"]]
         if not messagebox.askyesno(t["reset_confirm_t"], t["reset_confirm_m"]):
