@@ -684,6 +684,7 @@ class OneDriveCleanerVertical:
         self.show_tip(f"清理完成：删除 {deleted_files} 个文件，释放 {freed_gb:.3f} GB；跳过 {skipped} 个。")
         self.is_processing = False
         self.root.after(0, lambda: self.do_task(self.check_size_now))
+
     def confirm_reset_onedrive(self):
         t = LANG_DICT[self.config["lang"]]
         if messagebox.askyesno(t["reset_confirm_t"], t["reset_confirm_m"]):
