@@ -689,66 +689,106 @@ class OneDriveCleanerVertical:
     def move_folder(self):
         t = LANG_DICT[self.config["lang"]]
         target_dir = filedialog.askdirectory(title=t["move_select_t"])
-        if not target_dir: return
-        
-        drive = os.path.splitdrive(target_dir)[0].upper()
-        if drive == "C:":
-            messagebox.showerror("提示", t["move_err_c"])
+        if not target_dir:
             return
-
+        source = os.path.abspath(self.logs_dir)
+        target_dir = os.path.abspath(target_dir)
+        source_drive = os.path.splitdrive(source)[0].upper()
+        target_drive = os.path.splitdrive(target_dir)[0].upper()
+        if not target_drive or target_drive == source_drive:
+            messagebox.showerror("迁移取消", "请选择与当前日志目录不同的磁盘分区。")
+            return
+        if os.path.commonpath([os.path.realpath(source), os.path.realpath(target_dir)]) == os.path.realpath(source):
+            messagebox.showerror("迁移取消", "目标目录不能位于 OneDrive 日志目录内部。")
+            return
+        dest = os.path.join(target_dir, "OneDrive_Logs_Folder")
+        staging = dest + ".staging"
+        backup = source + ".backup_" + time.strftime("%Y%m%d_%H%M%S")
+        if os.path.exists(dest) or os.path.exists(staging):
+            messagebox.showerror("迁移取消", f"目标目录已存在，为防止覆盖数据，本次不执行迁移：\n{dest}")
+            return
         def _exec():
-            self.show_tip("正在准备挪动文件夹...")
-            subprocess.run(["taskkill", "/F", "/IM", "onedrive.exe"], capture_output=True)
-            time.sleep(1.5)
-            
-            dest = os.path.join(target_dir, "OneDrive_Logs_Folder")
+            stopped = False
             try:
-                os.makedirs(dest, exist_ok=True)
+                self.show_tip("正在停止 OneDrive，并复制日志目录...")
+                subprocess.run(["taskkill", "/F", "/IM", "onedrive.exe"], capture_output=True, timeout=15)
+                stopped = True
+                time.sleep(1.0)
+                if os.path.exists(source) and (os.path.islink(source) or (hasattr(os.path, "isjunction") and os.path.isjunction(source))):
+                    raise RuntimeError("当前日志目录已经是链接/Junction，请先恢复为普通目录。")
+                if os.path.exists(source):
+                    shutil.copytree(source, staging)
+                    def measure(folder):
+                        count, size = 0, 0
+                        for rr, dd, ff in os.walk(folder, followlinks=False):
+                            dd[:] = [d for d in dd if not os.path.islink(os.path.join(rr, d))]
+                            for fn in ff:
+                                pp = os.path.join(rr, fn)
+                                if os.path.islink(pp):
+                                    continue
+                                count += 1
+                                size += os.path.getsize(pp)
+                        return count, size
+                    if measure(source) != measure(staging):
+                        raise RuntimeError("复制后的文件数量或总容量校验不一致，原目录未更改。")
+                    os.rename(staging, dest)
+                    os.rename(source, backup)
+                else:
+                    os.makedirs(dest)
+                os.makedirs(os.path.dirname(source), exist_ok=True)
+                result = subprocess.run(["cmd", "/c", "mklink", "/J", source, dest], capture_output=True, text=True, timeout=20)
+                if result.returncode != 0 or not os.path.exists(source):
+                    if os.path.exists(source) and (os.path.islink(source) or (hasattr(os.path, "isjunction") and os.path.isjunction(source))):
+                        os.rmdir(source)
+                    if os.path.exists(backup) and not os.path.exists(source):
+                        os.rename(backup, source)
+                    raise RuntimeError((result.stderr or result.stdout or "创建 Junction 失败").strip())
+                self.db.add_record("REDIRECT", details=f"{dest} | BACKUP: {backup}")
+                self.drive_letter = target_drive
+                self.show_tip(f"迁移成功。新目录：{dest}；原目录备份保留在：{backup}")
             except Exception as e:
-                self.show_tip(f"前置校验失败，无法建立目标区: {e}")
-                self.is_processing = False; return
-
-            try:
-                if os.path.exists(self.logs_dir): shutil.rmtree(self.logs_dir)
-            except Exception as e:
-                self.show_tip(f"解除原端锁阻碍，请检查占用: {e}")
-                self.is_processing = False; return
-            
-            res = subprocess.run(f'mklink /j "{self.logs_dir}" "{dest}"', shell=True, capture_output=True, text=True)
-            if res.returncode == 0:
-                self.db.add_record("REDIRECT", details=dest)
-                self.show_tip(t["move_success"].format(d=dest))
-                self.drive_letter = drive 
-            else:
-                self.show_tip("挪动建立连接失败了，请稍后再试。")
-            
-            if self.onedrive_exe: os.system(f'start "" "{self.onedrive_exe}"')
-            self.is_processing = False; self.check_size_now()
-
+                if os.path.exists(staging):
+                    shutil.rmtree(staging, ignore_errors=True)
+                self.db._log_internal_error(f"目录迁移失败：{e}")
+                self.show_tip(f"迁移失败，已尝试回滚。原因：{e}")
+            finally:
+                if stopped and self.onedrive_exe:
+                    try:
+                        subprocess.Popen([self.onedrive_exe])
+                    except Exception as e:
+                        self.db._log_internal_error(f"重新启动 OneDrive 失败：{e}")
+                self.is_processing = False
+                self.root.after(0, lambda: self.do_task(self.check_size_now))
         self.do_task(_exec)
-
     def _monitor_loop(self):
+        warned = False
         while self.monitor_running:
-            s = 0
-            if os.path.exists(self.logs_dir):
-                for r, ds, fs in os.walk(self.logs_dir):
-                    for f in fs:
-                        try: s += os.path.getsize(os.path.join(r, f))
-                        except: pass
-            size_gb = s / (1024**3)
-            target_gb = self.config["threshold_gb"]
-            
-            if size_gb >= target_gb:
-                self.is_processing = True
-                self.clean_junk(silent=True)
-                
-                t = LANG_DICT[self.config["lang"]]
-                msg = t["auto_purged"].format(t=target_gb)
-                self.txt_con.after(0, lambda m=msg: self.txt_con.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {m}\n"))
-                time.sleep(3600)
-            else:
-                time.sleep(300)
-
+            try:
+                total = 0
+                if os.path.isdir(self.logs_dir):
+                    for current_root, dirs, files in os.walk(self.logs_dir, followlinks=False):
+                        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(current_root, d))]
+                        for name in files:
+                            path = os.path.join(current_root, name)
+                            try:
+                                if not os.path.islink(path):
+                                    total += os.path.getsize(path)
+                            except OSError:
+                                continue
+                size_gb = total / (1024 ** 3)
+                threshold = float(self.config.get("threshold_gb", 10))
+                if size_gb >= threshold and not warned:
+                    msg = f"日志目录已达到 {size_gb:.2f} GB（提醒阈值 {threshold:g} GB）。请打开主界面手动预览清理；Beta 2 不会自动删除文件。"
+                    self.root.after(0, lambda m=msg: self._print_box(m))
+                    warned = True
+                elif size_gb < threshold:
+                    warned = False
+            except Exception as e:
+                self.db._log_internal_error(f"后台空间监控异常：{e}")
+            for _ in range(300):
+                if not self.monitor_running:
+                    break
+                time.sleep(1)
 if __name__ == "__main__":
     root = tk.Tk()
     app = OneDriveCleanerVertical(root)
