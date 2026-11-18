@@ -555,9 +555,19 @@ class OneDriveCleanerVertical:
         self.txt_con.see(tk.END)
 
     def do_task(self, func):
-        if self.is_processing: return
+        if self.is_processing:
+            return
         self.is_processing = True
-        threading.Thread(target=func, daemon=True).start()
+
+        def _runner():
+            try:
+                func()
+            except Exception as e:
+                self.db._log_internal_error(f"后台任务异常：{traceback.format_exc()}")
+                self.is_processing = False
+                self.show_tip(f"操作失败，详细信息已写入 error_log.txt：{e}")
+
+        threading.Thread(target=_runner, daemon=True).start()
 
     def check_size_now(self):
         self.show_tip("ready")
@@ -718,7 +728,8 @@ class OneDriveCleanerVertical:
                 subprocess.run(["taskkill", "/F", "/IM", "onedrive.exe"], capture_output=True, timeout=15)
                 stopped = True
                 time.sleep(1.0)
-                if os.path.exists(source) and (os.path.islink(source) or (hasattr(os.path, "isjunction") and os.path.isjunction(source))):
+                is_junction = os.path.islink(source) or (hasattr(os.path, "isjunction") and os.path.isjunction(source))
+                if os.path.exists(source) and (is_junction or os.path.normcase(os.path.realpath(source)) != os.path.normcase(os.path.abspath(source))):
                     raise RuntimeError("当前日志目录已经是链接/Junction，请先恢复为普通目录。")
                 if os.path.exists(source):
                     shutil.copytree(source, staging)
@@ -742,7 +753,8 @@ class OneDriveCleanerVertical:
                 os.makedirs(os.path.dirname(source), exist_ok=True)
                 result = subprocess.run(["cmd", "/c", "mklink", "/J", source, dest], capture_output=True, text=True, timeout=20)
                 if result.returncode != 0 or not os.path.exists(source):
-                    if os.path.exists(source) and (os.path.islink(source) or (hasattr(os.path, "isjunction") and os.path.isjunction(source))):
+                    is_junction = os.path.islink(source) or (hasattr(os.path, "isjunction") and os.path.isjunction(source))
+                    if os.path.exists(source) and (is_junction or os.path.normcase(os.path.realpath(source)) != os.path.normcase(os.path.abspath(source))):
                         os.rmdir(source)
                     if os.path.exists(backup) and not os.path.exists(source):
                         os.rename(backup, source)
