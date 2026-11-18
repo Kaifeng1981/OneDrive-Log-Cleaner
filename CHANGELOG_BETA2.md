@@ -16,4 +16,4 @@
 ## Notes
 - This is a development build on the beta2-development branch. The main branch is unchanged.
 - Windows runtime testing is still required, especially Junction creation/rollback and OneDrive file-lock behavior.
-- The application icon is not replaced in this code pass; a distinct OneDrive Log Cleaner icon remains a separate Beta 2 task.
+- Replaced the previous icon with a distinct cloud + log document + checkmark design.
