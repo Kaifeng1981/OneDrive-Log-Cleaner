@@ -57,7 +57,7 @@ class SimpleLogger:
     def add_record(self, action_type, freed_gb=0.0, file_count=0, details=""):
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         if action_type == "PURGE":
-            line = f"[{timestamp}] | PURGE | FREED_GB: {freed_gb:.4f} | FILES: {file_count}\n"
+            line = f"[{timestamp}] | PURGE | FREED_GB: {freed_gb:.4f} | FILES: {file_count} | DETAILS: {details}\n"
         elif action_type == "RESET":
             line = f"[{timestamp}] | RESET | ONEDRIVE_RESET | STATUS: {details}\n"
         elif action_type == "REDIRECT":
@@ -364,7 +364,7 @@ class OneDriveCleanerVertical:
         self.sub_grid.pack(fill=tk.X, pady=2)
         self.btn_scan = tk.Button(self.sub_grid, font=("Microsoft YaHei", 9), relief=tk.FLAT, cursor="hand2", command=lambda: self.do_task(self.check_size_now))
         self.btn_scan.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
-        self.btn_reset = tk.Button(self.sub_grid, font=("Microsoft YaHei", 9), relief=tk.FLAT, cursor="hand2", command=lambda: self.do_task(self.reset_onedrive))
+        self.btn_reset = tk.Button(self.sub_grid, font=("Microsoft YaHei", 9), relief=tk.FLAT, cursor="hand2", command=self.confirm_reset_onedrive)
         self.btn_reset.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 3))
         self.btn_move = tk.Button(self.sub_grid, font=("Microsoft YaHei", 9), relief=tk.FLAT, cursor="hand2", command=self.move_folder)
         self.btn_move.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
@@ -684,11 +684,12 @@ class OneDriveCleanerVertical:
         self.show_tip(f"清理完成：删除 {deleted_files} 个文件，释放 {freed_gb:.3f} GB；跳过 {skipped} 个。")
         self.is_processing = False
         self.root.after(0, lambda: self.do_task(self.check_size_now))
-    def reset_onedrive(self):
+    def confirm_reset_onedrive(self):
         t = LANG_DICT[self.config["lang"]]
-        if not messagebox.askyesno(t["reset_confirm_t"], t["reset_confirm_m"]):
-            self.is_processing = False; return
+        if messagebox.askyesno(t["reset_confirm_t"], t["reset_confirm_m"]):
+            self.do_task(self.reset_onedrive)
 
+    def reset_onedrive(self):
         self.show_tip("正在让 OneDrive 重新检查文件...")
         if self.onedrive_exe:
             subprocess.run([self.onedrive_exe, "/reset"], capture_output=True)
@@ -732,7 +733,7 @@ class OneDriveCleanerVertical:
                 if os.path.exists(source) and (is_junction or os.path.normcase(os.path.realpath(source)) != os.path.normcase(os.path.abspath(source))):
                     raise RuntimeError("当前日志目录已经是链接/Junction，请先恢复为普通目录。")
                 if os.path.exists(source):
-                    shutil.copytree(source, staging)
+                    shutil.copytree(source, staging, ignore=lambda directory, names: [name for name in names if os.path.islink(os.path.join(directory, name))])
                     def measure(folder):
                         count, size = 0, 0
                         for rr, dd, ff in os.walk(folder, followlinks=False):
