@@ -4,6 +4,8 @@
 [![Language](https://img.shields.io/badge/Language-Python_3.x-yellow.svg)]()
 [![GUI](https://img.shields.io/badge/GUI-Tkinter-green.svg)]()
 
+**Current development: v1.0 Beta 2** — see the Beta 2 safety notes below.
+
 *(English below | 中文说明在下方)*
 
 ---
@@ -18,6 +20,18 @@
 
 ---
 
+
+
+## v1.0 Beta 2 — Safety-first development
+
+- Cleanup now uses a conservative allowlist and excludes generic .dat, .tmp, .txt, .bak, and .keystore files.
+- Manual cleanup presents a file-count and estimated-size preview and requires explicit confirmation.
+- Files that are locked, inaccessible, outside the resolved log directory, or symbolic links are skipped and logged.
+- Background threshold monitoring is alert-only; it does not automatically delete files.
+- Folder migration copies to a staging directory, verifies file count and total size, preserves the original as a timestamped backup, and attempts rollback if Junction creation fails.
+
+> Beta 2 is under development. Please test with non-critical data first. The original main branch remains unchanged while this work is reviewed.
+
 ## 🇬🇧 English
 
 **OneDrive Log Cleaner** is a defensive, fully portable Windows optimization engine designed to safely manage, purge, and redirect the heavy debugging logs and telemetry cache silently accumulated by Microsoft OneDrive.
@@ -26,15 +40,15 @@ It was engineered to solve a common headache for Windows users and professionals
 
 ### ✨ Key Features
 * **Defensive Whitelist Purging**: Precision-cleans dead debugging logs (.log, .etl, .odl, etc.) without ever touching your actual work files or cloud data.
-* **Smart Background Monitor**: Sits silently in the system tray. Automatically purges junk the moment it exceeds your customizable threshold (e.g., 10GB).
+* **Threshold Monitoring (Alert Only)**: Monitors the log directory and alerts when it reaches the configured threshold. Beta 2 never deletes files automatically.
 * **Non-Destructive Sync Reset**: Safely executes native commands to rebuild broken local sync hashes when OneDrive gets stuck on "Processing changes".
 * **Seamless Folder Redirection**: Uses NTFS junction points (`mklink`) to transparently move the heavy logs directory from C-drive to a secondary drive (D: or E:).
 * **100% Portable**: No installation required. All configurations (`app_config.json`) and runtime logs are saved strictly in the program's folder.
 
 ### 🚀 Getting Started
 1. Go to the [Releases](../../releases) page and download `OneDriveLogCleaner_vX.X.exe`.
-2. Run as Administrator (required to terminate file locks or create NTFS junction links).
-3. Click "Clean Onedrive log files" or toggle "Auto Clean" to let it guard your disk space.
+2. Run on Windows. Administrator permission may be required to create NTFS junctions; locked or inaccessible files are skipped.
+3. Click "Clean OneDrive log files", review the preview, and explicitly confirm before deletion.
 
 ---
 
@@ -46,15 +60,15 @@ It was engineered to solve a common headache for Windows users and professionals
 
 ### ✨ 核心功能
 * **全量白名单防御级清理**：严格基于扩展名精准抹除废旧日志碎片（.log, .etl, .odl 等），绝对不触碰您的任何实际工作文件与云端数据。
-* **后台静默空间卫士**：常驻系统托盘。一旦检测到垃圾堆积超过设定阈值（如 10GB），立刻触发后台静默释放，完全免打扰。
+* **空间阈值监控（仅提醒）**：监控日志目录容量，达到设定阈值时提醒用户。Beta 2 不会在后台自动删除文件。
 * **无损重置与账本重建**：当 OneDrive 长期转圈卡死、提示“正在处理更改”时，可一键安全重置，静默顺畅重建本地文件指纹账本。
 * **底层目录无缝迁移**：集成 NTFS 软链接技术，一键将极占空间的日志存放区从 C 盘定向挂载到 D 盘或 E 盘，治标且治本。
 * **极致绿色便携**：真正的单文件便携设计，配置与日志均保存在程序同级目录下，无广告、无隐私采集。
 
 ### 🚀 如何使用
 1. 前往右侧的 [Releases](../../releases) 页面，下载最新的 `OneDriveLogCleaner_vX.X.exe`。
-2. 双击运行程序（解除文件占用及创建软链接需管理员权限）。
-3. 点击“清除Onedrive log文件”即可瞬间释放空间；或勾选“自动清理”，让引擎常驻后台守护。
+2. 在 Windows 中运行。创建 NTFS Junction 可能需要管理员权限；被占用或无权限的文件会跳过。
+3. 点击“清理 OneDrive 日志文件”，先查看清理预览，再由你明确确认后执行。
 
 ---
 
@@ -63,4 +77,4 @@ It was engineered to solve a common headache for Windows users and professionals
 ### Option 1: Run from Source / 选项一：直接运行源码
 ```bash
 pip install Pillow pystray
-python "Onedrive Log Cleaner V1.0_Beta 1.py"
+python "Onedrive Log Cleaner.py"
